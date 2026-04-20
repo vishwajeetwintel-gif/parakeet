@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Parakeet AI</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #0A0D0E; min-height: 100vh; font-family: -apple-system, "SF Pro Display", system-ui, sans-serif; color: #fff; -webkit-font-smoothing: antialiased; }
+  @keyframes pk-spin { to { transform: rotate(360deg); } }
+  @keyframes pk-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.9); } }
+  @keyframes pk-breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+  @keyframes pk-fadein { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .pk-screen { animation: pk-fadein 280ms ease-out; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="app/android-device.jsx"></script>
+<script type="text/babel" src="app/tokens.jsx"></script>
+<script type="text/babel" src="app/store.jsx"></script>
+<script type="text/babel" src="app/auth.jsx"></script>
+<script type="text/babel" src="app/home.jsx"></script>
+<script type="text/babel" src="app/interview.jsx"></script>
+<script type="text/babel" src="app/history_profile.jsx"></script>
+<script type="text/babel" src="app/payu.jsx"></script>
+
+<script type="text/babel">
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "isPro": true,
+  "showEmptyHistory": false
+}/*EDITMODE-END*/;
+
+function App() {
+  const store = usePkStore();
+  // screen routing, persisted
+  const [screen, setScreen] = React.useState(() => localStorage.getItem('pk_screen') || 'splash');
+  const [activeIv, setActiveIv] = React.useState(null);
+  const [dialog, setDialog] = React.useState(null); // 'save' | 'delete' | 'mic' | 'upgrade' | 'signOut' | 'deleteAcct'
+  const [interviewConfig, setInterviewConfig] = React.useState(null);
+  const [lastFinished, setLastFinished] = React.useState(null);
+  const [tweaks, setTweaks] = React.useState(TWEAK_DEFAULTS);
+  const [tweaksVisible, setTweaksVisible] = React.useState(false);
+
+  React.useEffect(() => { localStorage.setItem('pk_screen', screen); }, [screen]);
+
+  // sync Pro tweak into store
+  React.useEffect(() => { store.updateSettings({ isPro: tweaks.isPro }); }, [tweaks.isPro]);
+
+  // Tweaks protocol
+  React.useEffect(() => {
+    const onMsg = (ev) => {
+      if (ev.data?.type === '__activate_edit_mode') setTweaksVisible(true);
+      if (ev.data?.type === '__deactivate_edit_mode') setTweaksVisible(false);
+    };
+    window.addEventListener('message', onMsg);
+    window.parent.postMessage({ type: '__edit_mode_available' }, '*');
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  const setTweak = (k, v) => {
+    const next = { ...tweaks, [k]: v };
+    setTweaks(next);
+    window.parent.postMessage({ type: '__edit_mode_set_keys', edits: { [k]: v } }, '*');
+  };
+
+  // seed demo data on first login when toggle enabled
+  const [seeded, setSeeded] = React.useState(false);
+  React.useEffect(() => {
+    if (store.state.user && !seeded && !tweaks.showEmptyHistory && store.state.interviews.length === 0) {
+      store.seedDemoData();
+      setSeeded(true);
+    }
+    if (tweaks.showEmptyHistory && store.state.interviews.length > 0) {
+      store.clearInterviews();
+    }
+  }, [store.state.user, tweaks.showEmptyHistory]);
+
+  const dark = store.state.settings.darkMode;
+  const isPro = store.state.settings.isPro;
+
+  // ── nav ──
+  const goHome = () => setScreen('home');
+  const goLogin = () => setScreen('login');
+
+  const handleLogin = (email, pw) => { store.signInWithEmail(email, pw); goHome(); };
+  const handleRegister = (name, email, pw) => { store.signUpWithEmail(name, email, pw); goHome(); };
+  const handleGoogle = () => { store.signInWithGoogle(); goHome(); };
+  const handleGuest = () => { store.signInAnonymous(); goHome(); };
+
+  const startInterview = (cfg) => {
+    setInterviewConfig(cfg || { role: 'Frontend', tone: 'Professional', len: 'Medium' });
+    setDialog('mic');
+  };
+
+  const afterMicAllow = () => { setDialog(null); setScreen('interview'); };
+  const afterMicDeny  = () => { setDialog(null); setScreen('interview'); }; // still show — type-only works
+
+  const onInterviewEnd = (iv) => {
+    if (iv && iv.qna && iv.qna.length > 0) {
+      setLastFinished(iv);
+      setScreen('reveal');
+    } else {
+      setScreen('home');
+    }
+  };
+
+  const commitAndShowDetail = () => {
+    if (lastFinished) {
+      store.addInterview(lastFinished);
+      setActiveIv({ ...lastFinished, id: 'iv_new', createdAt: Date.now() });
+      setScreen('detail');
+    }
+  };
+
+  let content = null;
+  if (!store.state.user) {
+    if (screen === 'splash') content = <div className="pk-screen" style={{height:'100%'}}><PkSplash onDone={() => setScreen(store.state.onboardingDone ? 'login' : 'onboarding')}/></div>;
+    else if (screen === 'onboarding') content = <div className="pk-screen" style={{height:'100%'}}><PkOnboarding onDone={() => { store.completeOnboarding(); setScreen('login'); }}/></div>;
+    else if (screen === 'register') content = <div className="pk-screen" style={{height:'100%'}}><PkRegister onRegister={handleRegister} onGoogle={handleGoogle} onBackToLogin={() => setScreen('login')}/></div>;
+    else if (screen === 'forgot') content = <div className="pk-screen" style={{height:'100%'}}><PkForgot onBack={() => setScreen('login')}/></div>;
+    else content = <div className="pk-screen" style={{height:'100%'}}><PkLogin onLogin={handleLogin} onGoogle={handleGoogle} onGuest={handleGuest} onRegister={() => setScreen('register')} onForgot={() => setScreen('forgot')}/></div>;
+  } else {
+    if (screen === 'setup') content = <div className="pk-screen" style={{height:'100%'}}><PkSetup dark={dark} onBack={goHome} onStart={startInterview}/></div>;
+    else if (screen === 'interview') content = <div className="pk-screen" style={{height:'100%'}}><PkInterview dark={dark} isPro={isPro} config={interviewConfig} onEnd={onInterviewEnd} onUpgrade={() => setDialog('upgrade')}/></div>;
+    else if (screen === 'reveal') content = <div className="pk-screen" style={{height:'100%'}}><PkScoreReveal dark={dark} score={lastFinished?.score || 8} role={lastFinished?.role || 'Interview'} onContinue={commitAndShowDetail}/></div>;
+    else if (screen === 'history') content = <div className="pk-screen" style={{height:'100%'}}><PkHistory dark={dark} store={store} onBack={goHome} onOpen={iv => { setActiveIv(iv); setScreen('detail'); }} onToggleEmpty={() => { if (store.state.interviews.length) store.clearInterviews(); else store.seedDemoData(); }}/></div>;
+    else if (screen === 'detail') content = <div className="pk-screen" style={{height:'100%'}}><PkDetail dark={dark} isPro={isPro} iv={activeIv || store.state.interviews[0]} onBack={() => setScreen('history')} onDelete={() => setDialog('delete')} onExport={() => alert('PDF export stub')} onUpgrade={() => setDialog('upgrade')}/></div>;
+    else if (screen === 'profile') content = <div className="pk-screen" style={{height:'100%'}}><PkProfile dark={dark} store={store} onBack={goHome} onSignOut={() => setDialog('signOut')} onDeleteAccount={() => setDialog('deleteAcct')} onUpgrade={() => setDialog('upgrade')}/></div>;
+    else content = <div className="pk-screen" style={{height:'100%'}}><PkHome dark={dark} store={store} onStartInterview={() => setScreen('setup')} onOpenSetup={() => setScreen('setup')} onOpenHistory={() => setScreen('history')} onOpenProfile={() => setScreen('profile')} onUpgrade={() => setDialog('upgrade')}/></div>;
+  }
+
+  // ── bottom tab bar (when logged in, on main screens) ──
+  const showTabs = store.state.user && ['home', 'history', 'profile'].includes(screen);
+  const tabBar = showTabs ? (
+    <div style={{
+      position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 30,
+      padding: '8px 18px 22px', background: `linear-gradient(180deg, transparent, ${dark ? '#050708' : '#F6F8F6'} 40%)`,
+      pointerEvents: 'none',
+    }}>
+      <div style={{
+        display: 'flex', justifyContent: 'space-around', alignItems: 'center',
+        background: dark ? 'rgba(21,26,29,0.85)' : 'rgba(255,255,255,0.85)',
+        backdropFilter: 'blur(14px)',
+        border: `1px solid ${dark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)'}`,
+        borderRadius: 22, padding: '10px 4px',
+        pointerEvents: 'auto',
+      }}>
+        {[
+          { k: 'home', icon: pkIcon.home, label: 'Home' },
+          { k: 'history', icon: pkIcon.history, label: 'History' },
+          { k: 'profile', icon: pkIcon.profile, label: 'Profile' },
+        ].map(tab => {
+          const active = screen === tab.k;
+          const col = active ? pkTokens.green : (dark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.5)');
+          return (
+            <button key={tab.k} onClick={() => setScreen(tab.k)} style={{
+              flex: 1, background: 'none', border: 'none', cursor: 'pointer',
+              padding: '6px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+              color: col,
+            }}>
+              {tab.icon(22, col)}
+              <div style={{ fontSize: 10, fontWeight: 600 }}>{tab.label}</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  ) : null;
+
+  // ── dialogs ──
+  const renderDialog = () => {
+    if (!dialog) return null;
+    if (dialog === 'mic') return <PkMicPermission dark={dark} onAllow={afterMicAllow} onDeny={afterMicDeny}/>;
+    if (dialog === 'upgrade') return <PkUpgradeSheet dark={dark} onClose={() => setDialog(null)} onSubscribe={() => setDialog('payu')}/>;
+    if (dialog === 'payu') return <PkPayUCheckout dark={dark} onClose={() => setDialog(null)} onSuccess={() => { store.updateSettings({ isPro: true }); setTweak('isPro', true); setDialog(null); }}/>;
+    if (dialog === 'save') return <PkDialog dark={dark} icon={pkIcon.save(32, pkTokens.green)} iconBg={pkTokens.greenSoft} title="Save Interview?" body="Would you like to save your current interview before leaving?" primary={{ label: 'Save & Exit', onClick: () => setDialog(null) }} secondary={{ label: 'Discard', variant: 'secondary', onClick: () => setDialog(null) }}/>;
+    if (dialog === 'delete') return <PkDialog dark={dark} icon={pkIcon.trash(30, pkTokens.danger)} iconBg="rgba(255,77,79,0.15)" title="Delete Interview?" body={`This action cannot be undone.\n${activeIv?.role || ''} • ${activeIv?.dateLabel || ''}`} primary={{ label: 'Delete', variant: 'danger', onClick: () => { store.deleteInterview(activeIv.id); setDialog(null); setScreen('history'); } }} secondary={{ label: 'Cancel', variant: 'secondary', onClick: () => setDialog(null) }}/>;
+    if (dialog === 'signOut') return <PkDialog dark={dark} icon={<span style={{fontSize:30}}>👋</span>} iconBg={pkTokens.greenSoft} title="Sign Out?" body="You can sign back in anytime." primary={{ label: 'Sign Out', variant: 'danger', onClick: () => { store.signOut(); setDialog(null); setScreen('login'); } }} secondary={{ label: 'Cancel', variant: 'secondary', onClick: () => setDialog(null) }}/>;
+    if (dialog === 'deleteAcct') return <PkDialog dark={dark} icon={pkIcon.trash(30, pkTokens.danger)} iconBg="rgba(255,77,79,0.15)" title="Delete Account?" body="This will permanently erase your data. This cannot be undone." primary={{ label: 'Delete Forever', variant: 'danger', onClick: () => { store.deleteAccount(); setDialog(null); setScreen('splash'); } }} secondary={{ label: 'Cancel', variant: 'secondary', onClick: () => setDialog(null) }}/>;
+    return null;
+  };
+
+  // ── viewport scaling ──
+  const [scale, setScale] = React.useState(1);
+  React.useEffect(() => {
+    const calc = () => {
+      const vw = window.innerWidth, vh = window.innerHeight;
+      const padH = 40, padV = 40;
+      const w = 402, h = 874;
+      const s = Math.min((vw - padH) / w, (vh - padV) / h, 1.1);
+      setScale(s);
+    };
+    calc();
+    window.addEventListener('resize', calc);
+    return () => window.removeEventListener('resize', calc);
+  }, []);
+
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, background: '#0A0D0E' }}>
+      <div style={{ transform: `scale(${scale})`, transformOrigin: 'center' }}>
+        <PkAndroidDevice dark={dark} width={402} height={874}>
+          <div style={{ position: 'relative', height: '100%' }} data-screen-label={screen}>
+            {content}
+            {tabBar}
+            {renderDialog()}
+          </div>
+        </PkAndroidDevice>
+      </div>
+
+      {/* Tweaks panel */}
+      {tweaksVisible && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, zIndex: 200,
+          width: 280, background: '#151A1D', border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: 18, padding: 18, color: '#fff',
+          boxShadow: '0 30px 60px rgba(0,0,0,0.4)',
+          fontFamily: '-apple-system, system-ui',
+        }}>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14, letterSpacing: -0.2 }}>Tweaks</div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+            <div style={{ fontSize: 13 }}>Pro account</div>
+            <PkSwitch on={tweaks.isPro} onChange={v => setTweak('isPro', v)}/>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+            <div style={{ fontSize: 13 }}>Empty history</div>
+            <PkSwitch on={tweaks.showEmptyHistory} onChange={v => setTweak('showEmptyHistory', v)}/>
+          </div>
+
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)', marginBottom: 6, letterSpacing: 0.3, fontWeight: 600 }}>JUMP TO SCREEN</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+            {['splash','onboarding','login','register','forgot','home','setup','interview','history','detail','profile'].map(s => (
+              <button key={s} onClick={() => setScreen(s)} style={{
+                background: screen === s ? pkTokens.greenSoft : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${screen === s ? pkTokens.green : 'rgba(255,255,255,0.08)'}`,
+                color: screen === s ? pkTokens.green : '#fff',
+                padding: '6px 8px', borderRadius: 8, fontSize: 11, cursor: 'pointer',
+                textTransform: 'capitalize',
+              }}>{s}</button>
+            ))}
+          </div>
+          <button onClick={() => { localStorage.removeItem('parakeet_ai_v1'); localStorage.removeItem('pk_screen'); location.reload(); }} style={{
+            width: '100%', background: 'rgba(255,77,79,0.1)', border: '1px solid rgba(255,77,79,0.3)',
+            color: '#FF8080', padding: '8px 10px', borderRadius: 10, fontSize: 12, cursor: 'pointer', marginTop: 4,
+          }}>Reset all data</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
